@@ -1,4 +1,3 @@
-firebase-admin
 upstox-python-sdk
 pandas
 pandas-ta

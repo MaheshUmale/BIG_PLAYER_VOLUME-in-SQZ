@@ -4,12 +4,17 @@ import json
 from time import sleep
 from datetime import datetime, timedelta
 import numpy as np
-import sqlite3
 from tradingview_screener import Query, col, And, Or
 import pandas as pd
 import rookiepy
 
+# Local imports
 from trading_app.pubsub.wss_handler import handle_scanner_alert
+from trading_app.core.database import (
+    load_previous_squeeze_list_from_db,
+    save_current_squeeze_list_to_db,
+    save_fired_events_to_db
+)
 
 # --- Global state for scanner settings ---
 scanner_settings = {
@@ -29,18 +34,6 @@ try:
 except Exception as e:
     print(f"Warning: Could not load TradingView cookies. Scanning may be delayed or fail. Error: {e}")
 
-# --- SQLite Timestamp Handling ---
-def adapt_datetime_iso(val):
-    """Adapt datetime.datetime to timezone-naive ISO 8601 format."""
-    return val.isoformat()
-
-def convert_timestamp(val):
-    """Convert ISO 8601 string to datetime.datetime object."""
-    return datetime.fromisoformat(val.decode())
-
-sqlite3.register_adapter(datetime, adapt_datetime_iso)
-sqlite3.register_converter("timestamp", convert_timestamp)
-
 # --- Pandas Configuration ---
 pd.set_option('display.expand_frame_repr', False)
 pd.set_option('display.max_columns', None)
@@ -54,7 +47,6 @@ def append_df_to_csv(df, csv_path):
         df.to_csv(csv_path, mode='a', header=False, index=False)
 
 # --- Configuration ---
-DB_FILE = 'squeeze_history.db'
 timeframes = ['', '|1', '|5', '|15', '|30', '|60', '|120', '|240', '|1W', '|1M']
 tf_order_map = {'|1M': 10, '|1W': 9, '|240': 8, '|120': 7, '|60': 6, '|30': 5, '|15': 4, '|5': 3, '|1': 2, '': 1}
 tf_display_map = {'': 'Daily', '|1': '1m', '|5': '5m', '|15': '15m', '|30': '30m', '|60': '1H', '|120': '2H', '|240': '4H', '|1W': 'Weekly', '|1M': 'Monthly'}
@@ -121,82 +113,8 @@ def get_fired_breakout_direction(row, fired_tf_name, tf_suffix_map):
     elif close < bb_lower and bb_lower < kc_lower: return 'Bearish'
     else: return 'Neutral'
 
-# --- Database Functions ---
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS squeeze_history (id INTEGER PRIMARY KEY AUTOINCREMENT, scan_timestamp TIMESTAMP NOT NULL, ticker TEXT NOT NULL, timeframe TEXT NOT NULL, volatility REAL, rvol REAL, SqueezeCount INTEGER, squeeze_strength TEXT, HeatmapScore REAL)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS fired_squeeze_events (id INTEGER PRIMARY KEY AUTOINCREMENT, fired_timestamp TIMESTAMP NOT NULL, ticker TEXT NOT NULL, fired_timeframe TEXT NOT NULL, momentum TEXT, previous_volatility REAL, current_volatility REAL, rvol REAL, HeatmapScore REAL, URL TEXT, logo TEXT, SqueezeCount INTEGER, highest_tf TEXT)''')
-    cursor.execute("PRAGMA table_info(fired_squeeze_events)")
-    columns = [info[1] for info in cursor.fetchall()]
-    if 'confluence' not in columns:
-        print("Adding 'confluence' column to 'fired_squeeze_events' table.")
-        cursor.execute("ALTER TABLE fired_squeeze_events ADD COLUMN confluence BOOLEAN DEFAULT 0")
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_scan_timestamp ON squeeze_history (scan_timestamp)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_fired_timestamp ON fired_squeeze_events (fired_timestamp)')
-    conn.commit()
-    conn.close()
-
-def load_previous_squeeze_list_from_db():
-    conn = sqlite3.connect(DB_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
-    cursor = conn.cursor()
-    try:
-        cursor.execute('SELECT MAX(scan_timestamp) FROM squeeze_history')
-        last_timestamp = cursor.fetchone()[0]
-        if last_timestamp is None: return []
-        cursor.execute('SELECT ticker, timeframe, volatility FROM squeeze_history WHERE scan_timestamp = ?', (last_timestamp,))
-        return [(row[0], row[1], row[2]) for row in cursor.fetchall()]
-    finally: conn.close()
-
-def save_current_squeeze_list_to_db(squeeze_records):
-    if not squeeze_records: return
-    conn = sqlite3.connect(DB_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
-    cursor = conn.cursor()
-    now = datetime.now()
-    data_to_insert = [(now, r['ticker'], r['timeframe'], r['volatility'], r.get('rvol'), r.get('SqueezeCount'), r.get('squeeze_strength'), r.get('HeatmapScore')) for r in squeeze_records]
-    cursor.executemany('INSERT INTO squeeze_history (scan_timestamp, ticker, timeframe, volatility, rvol, SqueezeCount, squeeze_strength, HeatmapScore) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', data_to_insert)
-    conn.commit()
-    conn.close()
-
-def save_fired_events_to_db(fired_events_df):
-    if fired_events_df.empty: return
-    conn = sqlite3.connect(DB_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
-    now = datetime.now()
-    if 'confluence' not in fired_events_df.columns:
-        fired_events_df['confluence'] = False
-    data_to_insert = [
-        (now, row['ticker'], row['fired_timeframe'], row.get('momentum'),
-         row.get('previous_volatility'), row.get('current_volatility'),
-         row.get('rvol'), row.get('HeatmapScore'), row.get('URL'),
-         row.get('logo'), row.get('SqueezeCount'), row.get('highest_tf'),
-         bool(row.get('confluence', False)))
-        for _, row in fired_events_df.iterrows()
-    ]
-    cursor = conn.cursor()
-    sql = '''
-        INSERT INTO fired_squeeze_events (
-            fired_timestamp, ticker, fired_timeframe, momentum,
-            previous_volatility, current_volatility, rvol, HeatmapScore,
-            URL, logo, SqueezeCount, highest_tf, confluence
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    '''
-    cursor.executemany(sql, data_to_insert)
-    conn.commit()
-    conn.close()
-
-def load_all_day_fired_events_from_db():
-    """Loads all fired events from the database for the current day."""
-    conn = sqlite3.connect(DB_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
-    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    query = "SELECT * FROM fired_squeeze_events WHERE fired_timestamp >= ? ORDER BY fired_timestamp DESC"
-    df = pd.read_sql_query(query, conn, params=(today_start,))
-    conn.close()
-    if not df.empty and 'fired_timestamp' in df.columns:
-        df['fired_timestamp'] = pd.to_datetime(df['fired_timestamp']).apply(lambda x: x.isoformat())
-    return df
-
 # --- Main Scanning Logic ---
-def run_scan(settings, db, app_id):
+def run_scan(settings): # Removed db, app_id
     """
     Runs a full squeeze scan, saves data, alerts for breakouts, and returns results.
     """
@@ -207,7 +125,7 @@ def run_scan(settings, db, app_id):
             print("Successfully loaded TradingView cookies on demand.")
         except Exception as e:
             print(f"Skipping scan: Could not load TradingView cookies. Error: {e}")
-            return None, None # Return empty results
+            return None # Return empty results
 
     try:
         prev_squeeze_pairs = load_previous_squeeze_list_from_db()
@@ -316,7 +234,7 @@ def run_scan(settings, db, app_id):
                     for _, row in df_newly_fired.iterrows():
                         full_symbol = f"{settings['exchange']}:{row['ticker']}"
                         print(f"--- Sending scanner alert for {full_symbol} ---")
-                        handle_scanner_alert(full_symbol, db, app_id)
+                        handle_scanner_alert(full_symbol) # Removed db, app_id
 
         save_current_squeeze_list_to_db(current_squeeze_records)
 

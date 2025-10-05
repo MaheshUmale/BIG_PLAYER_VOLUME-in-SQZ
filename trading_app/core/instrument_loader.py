@@ -1,141 +1,118 @@
-import requests
 import gzip
 import json
 import os
+import pandas as pd
 
-def download_and_parse_instrument_file(url, output_path="."):
+# --- Global Cache for Instruments ---
+INSTRUMENT_DF = None
+INSTRUMENT_MAP = {} # For quick symbol-to-key lookups
+
+def _load_instruments_from_file(file_path="trading_app/core/NSE.json.gz"):
     """
-    Downloads, decompresses, and parses the Upstox instrument file.
-
-    Args:
-        url (str): The URL to the gzipped instrument file.
-        output_path (str): The directory to save the downloaded and parsed files.
-
-    Returns:
-        list: A list of instrument data.
+    Loads and caches instrument data from the local gzipped JSON file.
+    This function is intended for internal use and will be called automatically.
     """
+    global INSTRUMENT_DF, INSTRUMENT_MAP
+    if INSTRUMENT_DF is not None:
+        return # Already loaded
+
+    print(f"Loading and caching instruments from {file_path}...")
     try:
-        # Create output directory if it doesn't exist
-        os.makedirs(output_path, exist_ok=True)
-
-        gz_filename = os.path.join(output_path, "instruments.json.gz")
-        json_filename = os.path.join(output_path, "instruments.json")
-
-        # Download the file
-        print(f"Downloading instrument file from {url}...")
-        response = requests.get(url, stream=True)
-        response.raise_for_status()  # Raise an exception for bad status codes
-
-        with open(gz_filename, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        print(f"Downloaded to {gz_filename}")
-
-        # Decompress the file
-        print(f"Decompressing {gz_filename}...")
-        with gzip.open(gz_filename, "rb") as f_in:
-            with open(json_filename, "wb") as f_out:
-                f_out.write(f_in.read())
-        print(f"Decompressed to {json_filename}")
-
-        # Parse the JSON file
-        print(f"Parsing {json_filename}...")
-        with open(json_filename, "r", encoding="utf-8") as f:
+        with gzip.open(file_path, "rt", encoding="utf-8") as f:
             instruments = json.load(f)
-        print("Parsing complete.")
 
-        return instruments
+        # Filter for NSE EQ segment
+        nse_eq_instruments = [
+            inst for inst in instruments
+            if inst.get("exchange") == "NSE" and inst.get("segment") == "NSE_EQ"
+        ]
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error downloading the file: {e}")
-        return None
-    except gzip.BadGzipFile:
-        print("Error: The downloaded file is not a valid gzip file.")
-        return None
-    except json.JSONDecodeError:
-        print("Error: Failed to decode JSON from the instrument file.")
-        return None
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        return None
+        INSTRUMENT_DF = pd.DataFrame(nse_eq_instruments)
 
-def seed_instruments_to_firestore(db, instruments, app_id):
-    """
-    Seeds the instrument data into Firestore.
-
-    Args:
-        db: The Firestore client.
-        instruments (list): A list of instrument data.
-        app_id (str): The application ID.
-    """
-    print("Seeding instruments to Firestore...")
-    batch = db.batch()
-    collection_ref = db.collection("artifacts", app_id, "public", "data", "upstox_instruments")
-
-    for instrument in instruments:
-        if instrument.get("exchange") == "NSE" and instrument.get("segment") == "EQ":
+        # Create a mapping for faster lookups
+        for instrument in nse_eq_instruments:
             symbol = f"{instrument['exchange']}:{instrument['trading_symbol']}"
-            doc_ref = collection_ref.document(symbol)
-            batch.set(doc_ref, {
-                "instrument_key": instrument["instrument_key"],
-                "exchange_token": instrument["exchange_token"],
-                "trading_symbol": instrument["trading_symbol"],
-                "exchange": instrument["exchange"],
-                "segment": instrument["segment"],
-            })
+            INSTRUMENT_MAP[symbol] = instrument["instrument_key"]
 
-    batch.commit()
-    print("Seeding complete.")
+        print(f"Successfully loaded and cached {len(INSTRUMENT_DF)} NSE equity instruments.")
 
-def get_instrument_key(db, app_id, symbol):
+    except FileNotFoundError:
+        print(f"FATAL: Instrument file not found at {file_path}. The application cannot map symbols to keys.")
+        raise
+    except Exception as e:
+        print(f"An error occurred while loading instruments: {e}")
+        raise
+
+def get_instrument_key(symbol):
     """
-    Retrieves the instrument key for a given symbol from Firestore.
+    Retrieves the instrument key for a given symbol from the local cache.
 
     Args:
-        db: The Firestore client.
-        app_id (str): The application ID.
         symbol (str): The symbol to look up (e.g., "NSE:RELIANCE").
 
     Returns:
         str: The instrument key, or None if not found.
     """
-    doc_ref = db.collection("artifacts", app_id, "public", "data", "upstox_instruments").document(symbol)
-    doc = doc_ref.get()
-    if doc.exists:
-        return doc.to_dict().get("instrument_key")
+    global INSTRUMENT_MAP
+    # Ensure instruments are loaded before trying to access them
+    if not INSTRUMENT_MAP:
+        _load_instruments_from_file()
+
+    return INSTRUMENT_MAP.get(symbol)
+
+def get_all_instrument_keys():
+    """
+    Returns a list of all cached instrument keys.
+    """
+    global INSTRUMENT_MAP
+    if not INSTRUMENT_MAP:
+        _load_instruments_from_file()
+
+    return list(INSTRUMENT_MAP.values())
+
+def get_symbol_by_key(instrument_key):
+    """
+    Retrieves the trading symbol for a given instrument key from the local cache.
+    """
+    global INSTRUMENT_MAP
+    if not INSTRUMENT_MAP:
+        _load_instruments_from_file()
+
+    # This is inefficient, but will work for now. A reverse map could be created if performance is an issue.
+    for symbol, key in INSTRUMENT_MAP.items():
+        if key == instrument_key:
+            return symbol
     return None
 
+
 if __name__ == "__main__":
-    # For local development, we'll use the copied NSE.json.gz file.
-    # In a real application, you would implement the download logic.
+    # --- Example Usage & Testing ---
+    print("Testing instrument loader...")
 
-    # For now, let's just focus on parsing the local file.
-    local_gz_path = "trading_app/core/NSE.json.gz"
-    json_filename = "trading_app/core/instruments.json"
+    # 1. Test getting a specific instrument key
+    reliance_key = get_instrument_key("NSE:RELIANCE")
+    print(f"Instrument key for NSE:RELIANCE: {reliance_key}")
+    assert reliance_key is not None
 
-    try:
-        print(f"Decompressing {local_gz_path}...")
-        with gzip.open(local_gz_path, "rb") as f_in:
-            with open(json_filename, "wb") as f_out:
-                f_out.write(f_in.read())
-        print(f"Decompressed to {json_filename}")
+    # 2. Test getting a non-existent key
+    non_existent_key = get_instrument_key("NSE:FAKESYMBOL")
+    print(f"Instrument key for NSE:FAKESYMBOL: {non_existent_key}")
+    assert non_existent_key is None
 
-        print(f"Parsing {json_filename}...")
-        with open(json_filename, "r", encoding="utf-8") as f:
-            instruments_data = json.load(f)
-        print("Parsing complete.")
+    # 3. Test that the cache is loaded only once
+    print("\nRequesting another key (should use cache)...")
+    infy_key = get_instrument_key("NSE:INFY")
+    print(f"Instrument key for NSE:INFY: {infy_key}")
+    assert infy_key is not None
 
-        # The rest of the logic (seeding to Firestore) will be called from the main application
-        # after Firebase is initialized.
+    # 4. Test getting all keys
+    all_keys = get_all_instrument_keys()
+    print(f"\nTotal instrument keys loaded: {len(all_keys)}")
+    assert len(all_keys) > 0
 
-        # Example of how it would be used:
-        # from firebase_setup import initialize_firebase
-        # db, auth, app_id = initialize_firebase()
-        # seed_instruments_to_firestore(db, instruments_data, app_id)
-        # instrument_key = get_instrument_key(db, app_id, "NSE:RELIANCE")
-        # print(f"Instrument key for NSE:RELIANCE is {instrument_key}")
+    # 5. Test reverse lookup
+    symbol = get_symbol_by_key(reliance_key)
+    print(f"\nSymbol for key {reliance_key}: {symbol}")
+    assert symbol == "NSE:RELIANCE"
 
-    except FileNotFoundError:
-        print(f"Error: {local_gz_path} not found. Please ensure the file is in the correct directory.")
-    except Exception as e:
-        print(f"An error occurred: {e}")
+    print("\nInstrument loader tests passed.")
