@@ -90,7 +90,7 @@ def get_market_data_feed_authorize_url(access_token):
       
     
     
-async def start_wss_connection(access_token):
+async def start_wss_connection(access_token, broadcast_callback):
     """Initializes and maintains the WebSocket connection using v3 API."""
     global WEBSOCKET_CLIENT, RECONNECT_ATTEMPTS
 
