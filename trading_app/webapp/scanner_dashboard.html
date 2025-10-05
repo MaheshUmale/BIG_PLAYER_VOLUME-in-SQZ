@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scanner Dashboard</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen p-4 sm:p-6">
+
+    <div class="max-w-7xl mx-auto">
+        <h1 class="text-3xl font-bold text-gray-100 mb-6 border-b border-gray-700 pb-3">
+            Squeeze Scanner Dashboard
+        </h1>
+
+        <!-- Squeezes in Progress Section -->
+        <div class="bg-gray-800 shadow-xl rounded-xl p-4 sm:p-6 mb-8">
+            <h2 class="text-2xl font-semibold text-gray-200 mb-4">Squeezes in Progress</h2>
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-700">
+                    <thead class="bg-gray-700">
+                        <tr>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Symbol</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Close</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">RVOL</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Squeeze Count</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Highest TF</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Strength</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Momentum</th>
+                        </tr>
+                    </thead>
+                    <tbody id="in-progress-table-body" class="bg-gray-800 divide-y divide-gray-700">
+                        <!-- Rows will be injected by JavaScript -->
+                        <tr><td colspan="7" class="text-center py-4 text-gray-500">Loading data...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Breakouts Fired Today Section -->
+        <div class="bg-gray-800 shadow-xl rounded-xl p-4 sm:p-6">
+            <h2 class="text-2xl font-semibold text-gray-200 mb-4">Breakouts Fired Today</h2>
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-700">
+                    <thead class="bg-gray-700">
+                        <tr>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Symbol</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Fired At</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Fired Timeframe</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Momentum</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">Type</th>
+                        </tr>
+                    </thead>
+                    <tbody id="fired-today-table-body" class="bg-gray-800 divide-y divide-gray-700">
+                        <!-- Rows will be injected by JavaScript -->
+                        <tr><td colspan="5" class="text-center py-4 text-gray-500">Loading data...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE_URL = window.location.origin;
+
+        async function fetchInProgressSqueezes() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/squeezes/in-progress`);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const data = await response.json();
+                updateInProgressTable(data);
+            } catch (error) {
+                console.error("Error fetching in-progress squeezes:", error);
+                const tableBody = document.getElementById('in-progress-table-body');
+                tableBody.innerHTML = `<tr><td colspan="7" class="text-center py-4 text-red-500">Failed to load data.</td></tr>`;
+            }
+        }
+
+        async function fetchFiredTodaySqueezes() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/squeezes/fired-today`);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const data = await response.json();
+                updateFiredTodayTable(data);
+            } catch (error) {
+                console.error("Error fetching fired-today squeezes:", error);
+                const tableBody = document.getElementById('fired-today-table-body');
+                tableBody.innerHTML = `<tr><td colspan="5" class="text-center py-4 text-red-500">Failed to load data.</td></tr>`;
+            }
+        }
+
+        function updateInProgressTable(data) {
+            const tableBody = document.getElementById('in-progress-table-body');
+            if (data.length === 0) {
+                tableBody.innerHTML = `<tr><td colspan="7" class="text-center py-4 text-gray-500">No squeezes currently in progress.</td></tr>`;
+                return;
+            }
+            tableBody.innerHTML = data.map(item => `
+                <tr class="hover:bg-gray-700">
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-blue-400">
+                        <a href="/chart?symbol=NSE:${item.name}" target="_blank" class="hover:underline">${item.name}</a>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${item.close.toFixed(2)}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${(item.rvol || 0).toFixed(2)}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${item.SqueezeCount}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${item.highest_tf}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${item.squeeze_strength}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${item.momentum}</td>
+                </tr>
+            `).join('');
+        }
+
+        function updateFiredTodayTable(data) {
+            const tableBody = document.getElementById('fired-today-table-body');
+            if (data.length === 0) {
+                tableBody.innerHTML = `<tr><td colspan="5" class="text-center py-4 text-gray-500">No breakouts have fired today.</td></tr>`;
+                return;
+            }
+            tableBody.innerHTML = data.map(item => `
+                <tr class="hover:bg-gray-700">
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-blue-400">
+                        <a href="/chart?symbol=NSE:${item.ticker}" target="_blank" class="hover:underline">${item.ticker}</a>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${new Date(item.fired_timestamp).toLocaleTimeString()}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${item.fired_timeframe}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${item.momentum}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${item.squeeze_strength}</td>
+                </tr>
+            `).join('');
+        }
+
+        function refreshData() {
+            fetchInProgressSqueezes();
+            fetchFiredTodaySqueezes();
+        }
+
+        // Initial load and set up periodic refresh every 30 seconds
+        document.addEventListener('DOMContentLoaded', () => {
+            refreshData();
+            setInterval(refreshData, 30000);
+        });
+    </script>
+</body>
+</html>

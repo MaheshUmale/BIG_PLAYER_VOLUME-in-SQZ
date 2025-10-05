@@ -184,11 +184,21 @@ def save_fired_events_to_db(fired_events_df):
     conn.commit()
     conn.close()
 
+def load_all_day_fired_events_from_db():
+    """Loads all fired events from the database for the current day."""
+    conn = sqlite3.connect(DB_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    query = "SELECT * FROM fired_squeeze_events WHERE fired_timestamp >= ? ORDER BY fired_timestamp DESC"
+    df = pd.read_sql_query(query, conn, params=(today_start,))
+    conn.close()
+    if not df.empty and 'fired_timestamp' in df.columns:
+        df['fired_timestamp'] = pd.to_datetime(df['fired_timestamp']).apply(lambda x: x.isoformat())
+    return df
+
 # --- Main Scanning Logic ---
 def run_scan(settings, db, app_id):
     """
-    Runs a full squeeze scan, processes the data, saves it to the database,
-    and alerts the Pub/Sub service for newly fired breakouts.
+    Runs a full squeeze scan, saves data, alerts for breakouts, and returns results.
     """
     global cookies
     if cookies is None:
@@ -197,7 +207,7 @@ def run_scan(settings, db, app_id):
             print("Successfully loaded TradingView cookies on demand.")
         except Exception as e:
             print(f"Skipping scan: Could not load TradingView cookies. Error: {e}")
-            return
+            return None, None # Return empty results
 
     try:
         prev_squeeze_pairs = load_previous_squeeze_list_from_db()
@@ -213,15 +223,17 @@ def run_scan(settings, db, app_id):
         query_in_squeeze = Query().select(*select_cols).where2(And(*filters)).set_markets(settings['market'])
         _, df_in_squeeze = query_in_squeeze.get_scanner_data(cookies=cookies)
 
-        current_squeeze_pairs = []
         df_in_squeeze_processed = pd.DataFrame()
         if df_in_squeeze is not None and not df_in_squeeze.empty:
+            # This block is intensive, but necessary for the detailed analysis
+            current_squeeze_pairs = []
             for _, row in df_in_squeeze.iterrows():
                 for tf_suffix, tf_name in tf_display_map.items():
                     if (row.get(f'BB.upper{tf_suffix}') < row.get(f'KltChnl.upper{tf_suffix}')) and (row.get(f'BB.lower{tf_suffix}') > row.get(f'KltChnl.lower{tf_suffix}')):
                         atr, sma20, bb_upper = row.get(f'ATR{tf_suffix}'), row.get(f'SMA20{tf_suffix}'), row.get(f'BB.upper{tf_suffix}')
                         volatility = (bb_upper - sma20) / atr if pd.notna(atr) and atr != 0 and pd.notna(sma20) and pd.notna(bb_upper) else 0
                         current_squeeze_pairs.append((row['ticker'], tf_name, volatility))
+
             df_in_squeeze['encodedTicker'] = df_in_squeeze['ticker'].apply(urllib.parse.quote)
             df_in_squeeze['URL'] = "https://in.tradingview.com/chart/N8zfIJVK/?symbol=" + df_in_squeeze['encodedTicker']
             df_in_squeeze['logo'] = df_in_squeeze['logoid'].apply(lambda x: f"https://s3-symbol-logo.tradingview.com/{x}.svg" if pd.notna(x) and x.strip() else '')
@@ -236,6 +248,7 @@ def run_scan(settings, db, app_id):
             volatility_map = {(ticker, tf): vol for ticker, tf, vol in current_squeeze_pairs}
             df_in_squeeze['volatility'] = df_in_squeeze.apply(lambda row: volatility_map.get((row['ticker'], row['highest_tf']), 0), axis=1)
             df_in_squeeze['HeatmapScore'] = df_in_squeeze['rvol'] * df_in_squeeze['momentum'].map({'Bullish': 1, 'Neutral': 0.5, 'Bearish': -1}) * df_in_squeeze['volatility']
+
             ticker_data_map = {row['ticker']: row.to_dict() for _, row in df_in_squeeze.iterrows()}
             current_squeeze_records = [{'ticker': t, 'timeframe': tf, 'volatility': v, **ticker_data_map.get(t, {})} for t, tf, v in current_squeeze_pairs]
             df_in_squeeze_processed = df_in_squeeze
@@ -301,12 +314,15 @@ def run_scan(settings, db, app_id):
 
                     # --- INTEGRATION: Send alert to Pub/Sub Service ---
                     for _, row in df_newly_fired.iterrows():
-                        # The scanner gives the ticker (e.g., "TATASTEEL"), but the pubsub needs the full symbol (e.g., "NSE:TATASTEEL")
                         full_symbol = f"{settings['exchange']}:{row['ticker']}"
                         print(f"--- Sending scanner alert for {full_symbol} ---")
                         handle_scanner_alert(full_symbol, db, app_id)
 
         save_current_squeeze_list_to_db(current_squeeze_records)
 
+        # Return the dataframe of stocks currently in a squeeze for the dashboard
+        return df_in_squeeze_processed
+
     except Exception as e:
         print(f"An error occurred during scan: {e}")
+        return None
