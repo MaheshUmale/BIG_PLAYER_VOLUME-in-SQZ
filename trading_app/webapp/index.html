@@ -8,10 +8,6 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- ECharts -->
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
-    <!-- Firebase -->
-    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
 </head>
 <body class="bg-gray-900 text-white min-h-screen p-4 sm:p-6">
 
@@ -25,9 +21,6 @@
                     <div class="w-2 h-2 rounded-full bg-yellow-500 mr-2 animate-pulse" id="status-dot"></div>
                     <span id="status-text">Initializing...</span>
                 </div>
-                <button id="copy-user-id" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded transition duration-300">
-                    Copy User ID
-                </button>
             </div>
         </div>
 
@@ -45,22 +38,7 @@
         let tradingChart = null;
         let chartData = { ohlc: [], bubbles: [] };
         let symbol = null;
-        let userId = null;
-        let db = null;
-        let unsubscribe = null; // To hold the Firestore listener
-
-        // --- Firebase Configuration (to be populated by a config script/env vars) ---
-        const __app_id = 'bpv-sqz-app';
-        const __firebase_config = {
-            // This will be replaced by your actual Firebase config
-            apiKey: "YOUR_API_KEY",
-            authDomain: "YOUR_AUTH_DOMAIN",
-            projectId: "YOUR_PROJECT_ID",
-            storageBucket: "YOUR_STORAGE_BUCKET",
-            messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-            appId: "YOUR_APP_ID"
-        };
-        const __initial_auth_token = undefined;
+        let webSocket = null;
 
         // --- UI & Status Helpers ---
         function updateStatus(state, message) {
@@ -68,13 +46,14 @@
             const text = document.getElementById('status-text');
             dot.classList.remove('bg-green-500', 'bg-yellow-500', 'bg-red-500', 'animate-pulse');
             switch (state) {
-                case 'LOADING':
+                case 'CONNECTING':
                     dot.classList.add('bg-yellow-500', 'animate-pulse');
                     break;
                 case 'LIVE':
                     dot.classList.add('bg-green-500');
                     break;
                 case 'ERROR':
+                case 'CLOSED':
                     dot.classList.add('bg-red-500');
                     break;
             }
@@ -85,8 +64,8 @@
             document.getElementById('chart-title').textContent = `SQZ + BPV Chart for ${symbol}`;
         }
 
-        // --- Core Data Logic ---
-        async function initializeApp() {
+        // --- Core WebSocket and Data Logic ---
+        function initializeApp() {
             // 1. Get symbol from URL
             const urlParams = new URLSearchParams(window.location.search);
             symbol = urlParams.get('symbol');
@@ -97,99 +76,85 @@
             }
             setChartTitle(symbol);
 
-            // 2. Initialize Firebase and Authenticate
-            try {
-                firebase.initializeApp(__firebase_config);
-                db = firebase.firestore();
-                const auth = firebase.auth();
-
-                if (__initial_auth_token) {
-                    const userCredential = await auth.signInWithCustomToken(__initial_auth_token);
-                    userId = userCredential.user.uid;
-                } else {
-                    const userCredential = await auth.signInAnonymously();
-                    userId = userCredential.user.uid;
-                }
-                updateStatus('LOADING', `Authenticated as ${userId.substring(0, 8)}...`);
-                document.getElementById('copy-user-id').onclick = () => navigator.clipboard.writeText(userId);
-
-            } catch (e) {
-                updateStatus('ERROR', 'Firebase initialization failed.');
-                console.error("Firebase init error:", e);
-                return;
-            }
-
-            // 3. Start the data loading sequence
-            await loadAndDisplayData();
-        }
-
-        async function loadAndDisplayData() {
-            updateStatus('LOADING', 'Fetching historical data...');
-
-            const todayStr = new Date().toISOString().slice(0, 10);
-            const docId = `${symbol}_${todayStr}`;
-            const docRef = db.collection("artifacts").doc(__app_id).collection("public/data/live_candles").doc(docId);
-
-            // Fetch initial data once
-            const initialDoc = await docRef.get();
-            if (initialDoc.exists) {
-                const data = initialDoc.data();
-                processCandleData(data.candles || []);
-            } else {
-                console.log("No historical data for today. Waiting for live data.");
-                // Here you would call the backend to fill missing data if needed.
-                // For this example, we will just wait for live data.
-            }
-
-            // Hide loading indicator and draw initial chart
+            // 2. Initialize the chart and connect WebSocket
             document.getElementById('loading-indicator').classList.add('hidden');
             drawChart();
-
-            // 4. Set up live listener
-            listenForLiveUpdates(docRef);
+            connectWebSocket();
         }
 
-        function listenForLiveUpdates(docRef) {
-            if (unsubscribe) unsubscribe(); // Detach any old listener
+        function connectWebSocket() {
+            // Use wss for secure connections in production
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${wsProtocol}//${window.location.hostname}:8765`;
 
-            unsubscribe = docRef.onSnapshot(doc => {
-                if (doc.exists) {
+            updateStatus('CONNECTING', `Connecting to ${wsUrl}...`);
+            webSocket = new WebSocket(wsUrl);
+
+            webSocket.onopen = () => {
+                updateStatus('CONNECTING', 'Connection open. Subscribing to symbol...');
+                // Subscribe to the symbol's data feed
+                webSocket.send(JSON.stringify({ action: 'subscribe', symbol: symbol }));
+            };
+
+            webSocket.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+
+                if (message.type === 'historical_data') {
+                    updateStatus('LIVE', 'Historical data loaded. Waiting for live feed...');
+                    console.log(`Received ${message.data.length} historical candles.`);
+                    processCandleData(message.data, true); // `true` to replace existing data
+                } else if (message.type === 'live_candle') {
                     updateStatus('LIVE', 'Receiving live data...');
-                    const data = doc.data();
-                    processCandleData(data.candles || []);
-                    drawChart(); // Redraw with new data
+                    processCandleData([message.data], false); // `false` to update/append
                 }
-            }, error => {
-                console.error("Firestore listener error:", error);
-                updateStatus('ERROR', 'Connection to live data failed.');
-            });
+
+                drawChart(); // Redraw chart with new data
+            };
+
+            webSocket.onclose = () => {
+                updateStatus('CLOSED', 'Connection closed. Please refresh.');
+                console.log('WebSocket connection closed.');
+            };
+
+            webSocket.onerror = (error) => {
+                updateStatus('ERROR', 'WebSocket error.');
+                console.error('WebSocket Error:', error);
+            };
         }
 
-        function processCandleData(candles) {
-            // Sort candles just in case they are out of order
-            candles.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        function processCandleData(candles, isHistorical = false) {
+            if (isHistorical) {
+                chartData.ohlc = []; // Clear previous data
+            }
 
-            chartData.ohlc = candles.map(c => [
-                new Date(c.timestamp).getTime(),
-                c.open,
-                c.close,
-                c.low,
-                c.high,
-                c.volume
-            ]);
-
-            // Create bubbles for candles with significant volume (ltq)
-            const avgVolume = candles.reduce((acc, c) => acc + c.volume, 0) / candles.length || 1;
-
-            chartData.bubbles = candles.filter(c => c.ltq > 0).map(c => {
-                return [
-                    new Date(c.timestamp).getTime(),
-                    c.close, // Position bubble at the close price of the candle
-                    c.ltq, // The size of the bubble is based on LTQ
-                    (c.volume / avgVolume) // Example of a simple "impact score"
+            candles.forEach(c => {
+                const candleTimestamp = new Date(c.timestamp).getTime();
+                // The backend sends data with keys: open, high, low, close, volume, timestamp
+                const ohlc_data = [
+                    candleTimestamp,
+                    c.open,
+                    c.high,
+                    c.low,
+                    c.close,
+                    c.volume
                 ];
+
+                // Find if a candle with the same timestamp already exists
+                const existingCandleIndex = chartData.ohlc.findIndex(d => d[0] === candleTimestamp);
+
+                if (existingCandleIndex !== -1) {
+                    // Update existing candle for live data
+                    chartData.ohlc[existingCandleIndex] = ohlc_data;
+                } else {
+                    // Add new candle
+                    chartData.ohlc.push(ohlc_data);
+                }
             });
+
+            // Sort data by timestamp to ensure correctness, especially after adding historical data
+            chartData.ohlc.sort((a, b) => a[0] - b[0]);
         }
+
 
         // --- Charting Logic (adapted from BubbleChartApp) ---
         function drawChart() {
@@ -205,7 +170,7 @@
                     axisPointer: { type: 'cross' }
                 },
                 legend: {
-                    data: ['Candles', 'Big Player Volume (BPV)'],
+                    data: ['Candles'],
                     textStyle: { color: '#ccc' }
                 },
                 grid: { left: '10%', right: '8%', bottom: '15%' },
@@ -234,23 +199,8 @@
                             borderColor: '#00da3c',
                             borderColor0: '#ec0000'
                         }
-                    },
-                    {
-                        name: 'Big Player Volume (BPV)',
-                        type: 'scatter',
-                        data: chartData.bubbles,
-                        symbolSize: function (data) {
-                            // Scale bubble size based on LTQ
-                            return Math.sqrt(data[2]) * 2;
-                        },
-                        itemStyle: {
-                            color: new echarts.graphic.RadialGradient(0.4, 0.3, 1, [
-                                { offset: 0, color: 'rgb(251, 118, 123)' },
-                                { offset: 1, color: 'rgb(204, 46, 72)' }
-                            ]),
-                             opacity: 0.7
-                        }
                     }
+                    // BPV Bubble series removed for simplicity, as backend data feed needs to be adapted
                 ]
             };
             tradingChart.setOption(option, true);
@@ -261,7 +211,6 @@
         window.onresize = () => {
             if (tradingChart) tradingChart.resize();
         };
-
     </script>
 </body>
 </html>

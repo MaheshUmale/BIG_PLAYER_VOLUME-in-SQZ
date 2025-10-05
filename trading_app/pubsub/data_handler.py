@@ -5,10 +5,10 @@ from trading_app.core.instrument_loader import get_symbol_by_key
 # This dictionary will hold the state of the current 1-minute candle for each subscribed instrument.
 CANDLE_STATE = {}
 
-def process_live_feed(feed):
+async def process_live_feed(feed, broadcast_callback):
     """
     Processes a single tick from the live feed, updates the candle state,
-    and stores the completed candle in the database.
+    stores the completed candle, and broadcasts it to clients.
     """
     global CANDLE_STATE
 
@@ -22,7 +22,7 @@ def process_live_feed(feed):
 
         if not all([price, quantity, timestamp_ms]):
             print(f"Skipping incomplete tick for {instrument_key}")
-            return # Skip if essential data is missing
+            return
 
         dt_object = datetime.fromtimestamp(timestamp_ms / 1000)
         current_minute = dt_object.replace(second=0, microsecond=0)
@@ -45,15 +45,20 @@ def process_live_feed(feed):
 
         if current_minute > state_minute:
             # A new minute has started, the previous candle is complete.
-            # Let's save the completed candle.
             completed_candle = state
             symbol = get_symbol_by_key(instrument_key)
             print(f"Completed 1-min candle for {symbol}: {completed_candle}")
 
-            # Save to the central database
+            # 1. Save to the central database
             save_candle_data(instrument_key, completed_candle)
 
-            # Start a new candle for the current minute
+            # 2. Broadcast the completed candle to all connected clients
+            await broadcast_callback({
+                "type": "live_candle",
+                "data": completed_candle
+            })
+
+            # 3. Start a new candle for the current minute
             CANDLE_STATE[instrument_key] = {
                 'timestamp': current_minute.isoformat(),
                 'open': price,

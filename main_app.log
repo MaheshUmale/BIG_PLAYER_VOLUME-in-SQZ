@@ -1,0 +1,36 @@
+/app/trading_app/main.py:9: DeprecationWarning: websockets.server.serve is deprecated
+  from websockets.server import serve
+Warning: Could not load TradingView cookies. Scanning may be delayed or fail. Error: can't find cookies file
+
+Location:
+    rookie-rs/src/common/paths.rs:48:7
+Initializing local database...
+Initializing database...
+Successfully connected to database: trading_app_data.db
+Database initialized successfully. Tables 'fired_events', 'squeeze_history', and 'candles' are ready.
+Database initialized.
+WebSocket server thread started.
+Scanner is configured to run every 5 minutes.
+--- [Sun Oct  5 23:27:46 2025] --- Starting new scanner run...
+Skipping scan: Could not load TradingView cookies. Error: can't find cookies file
+
+Location:
+    rookie-rs/src/common/paths.rs:48:7
+--- Scanner run finished. Updated cache with 0 in-progress squeezes. ---
+Waiting for 5 minutes until the next scan cycle...
+Scanner loop is running in the background.
+------------------------------------------------------------
+UPSTOX_ACCESS_TOKEN not found.
+The scanner will run, but real-time data feed will be disabled.
+To enable real-time data, open this URL and log in:
+https://api-v2.upstox.com/v2/login/authorization/dialog?response_type=code&client_id=7b876a6e-1b04-4e6e-a748-d83c3d56ba26&redirect_uri=http://0.0.0.0:8080/callback
+------------------------------------------------------------
+Starting Flask web server on http://0.0.0.0:8080
+WebSocket server started on ws://0.0.0.0:8765
+ * Serving Flask app 'main'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8080
+ * Running on http://192.168.0.2:8080
+[33mPress CTRL+C to quit[0m

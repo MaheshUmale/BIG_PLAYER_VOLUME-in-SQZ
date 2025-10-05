@@ -1,15 +1,20 @@
 import asyncio
 import os
 import time
+import json
 from threading import Thread, Lock
 import pandas as pd
 from flask import Flask, jsonify, render_template, request, redirect
+import websockets
+from websockets.server import serve
 
 # Local imports
 from trading_app.core.database import init_db as init_local_db, load_all_day_fired_events_from_db
 from trading_app.scanner.original_scanner import run_scan, scanner_settings
 from trading_app.pubsub.wss_handler import start_wss_connection
 from trading_app.UpstoxLOGIN import login_to_upstox, get_login_url
+from trading_app.core.instrument_loader import get_instrument_key
+from trading_app.core.database import get_db_connection
 
 # --- Global Variables ---
 scanner_cache = {
@@ -17,6 +22,86 @@ scanner_cache = {
 }
 cache_lock = Lock()
 wss_thread = None
+
+# --- WebSocket Server Setup ---
+WEBSOCKET_CLIENTS = set()
+clients_lock = Lock()
+
+async def broadcast_message(message):
+    """Broadcasts a message to all connected WebSocket clients."""
+    if not WEBSOCKET_CLIENTS:
+        return
+
+    # Create a JSON string from the message dictionary
+    json_message = json.dumps(message)
+
+    # Use asyncio.gather to send messages concurrently
+    await asyncio.gather(
+        *[client.send(json_message) for client in WEBSOCKET_CLIENTS]
+    )
+
+async def websocket_handler(websocket, path):
+    """Handles WebSocket connections and subscriptions."""
+    global WEBSOCKET_CLIENTS
+
+    # Register client
+    with clients_lock:
+        WEBSOCKET_CLIENTS.add(websocket)
+    print(f"New client connected. Total clients: {len(WEBSOCKET_CLIENTS)}")
+
+    try:
+        async for message in websocket:
+            data = json.loads(message)
+            action = data.get('action')
+
+            if action == 'subscribe' and 'symbol' in data:
+                symbol = data['symbol']
+                print(f"Client subscribed to symbol: {symbol}")
+
+                # 1. Fetch and send historical data first
+                instrument_key = get_instrument_key(symbol)
+                if instrument_key:
+                    conn = get_db_connection()
+                    # Query for today's candles for that instrument
+                    query = "SELECT * FROM candles WHERE instrument_key = ? AND date(timestamp) = date('now', 'localtime') ORDER BY timestamp"
+                    df = pd.read_sql_query(query, conn, params=(instrument_key,))
+
+                    if not df.empty:
+                        # Convert dataframe to list of dicts
+                        historical_data = df.to_dict(orient='records')
+
+                        # Send historical data to the client
+                        await websocket.send(json.dumps({
+                            "type": "historical_data",
+                            "data": historical_data
+                        }))
+                        print(f"Sent {len(historical_data)} historical candles to client for {symbol}")
+
+    except websockets.exceptions.ConnectionClosed:
+        print("Client connection closed.")
+    finally:
+        # Unregister client
+        with clients_lock:
+            WEBSOCKET_CLIENTS.remove(websocket)
+        print(f"Client disconnected. Total clients: {len(WEBSOCKET_CLIENTS)}")
+
+
+def start_websocket_server():
+    """Starts the WebSocket server in a separate thread."""
+    async def run_server():
+        # The server will run on port 8765
+        async with serve(websocket_handler, "0.0.0.0", 8765):
+            print("WebSocket server started on ws://0.0.0.0:8765")
+            await asyncio.Future()  # Run forever
+
+    def loop_in_thread():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(run_server())
+
+    thread = Thread(target=loop_in_thread, daemon=True)
+    thread.start()
+    print("WebSocket server thread started.")
 
 # --- Flask Web Server Setup ---
 app = Flask(__name__, template_folder='webapp')
@@ -66,7 +151,8 @@ def callback():
     if access_token:
         if wss_thread is None or not wss_thread.is_alive():
             print("Access token received. Starting WebSocket handler...")
-            wss_thread = start_wss_thread(access_token)
+            # Pass the broadcast_message function as a callback
+            wss_thread = start_wss_thread(access_token, broadcast_message)
             time.sleep(5)  # Give the connection a moment to establish
 
         # This JavaScript closes the login popup and reloads the parent page.
@@ -138,16 +224,17 @@ def run_scanner_loop(): # Removed db, app_id
         print(f"Waiting for {SCAN_INTERVAL_MINUTES} minutes until the next scan cycle...")
         time.sleep(SCAN_INTERVAL_MINUTES * 60)
 
-def start_wss_thread(access_token):
+def start_wss_thread(access_token, broadcast_callback):
     """Starts the WebSocket handler in a daemon thread."""
     def run_async_loop():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(start_wss_connection(access_token))
+        # Pass the callback to the connection handler
+        loop.run_until_complete(start_wss_connection(access_token, broadcast_callback))
 
     thread = Thread(target=run_async_loop, daemon=True)
     thread.start()
-    print("WebSocket handler thread started.")
+    print("Upstox WebSocket handler thread started.")
     return thread
 
 def main():
@@ -160,16 +247,20 @@ def main():
     init_local_db()
     print("Database initialized.")
 
-    # --- 2. Start Scanner Loop (runs independently) ---
+    # --- 2. Start Application WebSocket Server ---
+    start_websocket_server()
+
+    # --- 3. Start Scanner Loop (runs independently) ---
     scanner_thread = Thread(target=run_scanner_loop, daemon=True)
     scanner_thread.start()
     print("Scanner loop is running in the background.")
 
-    # --- 3. Check for Existing Token and Start WebSocket if Found ---
+    # --- 4. Check for Existing Token and Start Upstox WebSocket if Found ---
     access_token = os.environ.get("UPSTOX_ACCESS_TOKEN")
     if access_token:
-        print("Found existing access token. Starting WebSocket handler...")
-        wss_thread = start_wss_thread(access_token)
+        print("Found existing access token. Starting Upstox WebSocket handler...")
+        # Pass the broadcast_message function as a callback
+        wss_thread = start_wss_thread(access_token, broadcast_message)
     else:
         login_url = get_login_url()
         print("-" * 60)
@@ -179,7 +270,7 @@ def main():
         print(login_url)
         print("-" * 60)
 
-    # --- 4. Start Flask Web Server (Main Thread) ---
+    # --- 5. Start Flask Web Server (Main Thread) ---
     print("Starting Flask web server on http://0.0.0.0:8080")
     app.run(host='0.0.0.0', port=8080, debug=False)
 

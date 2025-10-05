@@ -28,7 +28,7 @@ RECONNECT_ATTEMPTS = 0
 MAX_RECONNECT_ATTEMPTS = 5
 RECONNECT_DELAY_SECONDS = 5
 
-async def start_wss_connection(access_token):
+async def start_wss_connection(access_token, broadcast_callback):
     """Initializes and maintains the WebSocket connection using v3 API."""
     global WEBSOCKET_CLIENT, RECONNECT_ATTEMPTS
 
@@ -70,7 +70,8 @@ async def start_wss_connection(access_token):
                     message = await websocket.recv()
                     decoded_data = decode_protobuf_message(message)
                     if decoded_data and 'feeds' in decoded_data:
-                        process_live_feed(decoded_data['feeds'])
+                        # Pass the callback to the data handler
+                        await process_live_feed(decoded_data['feeds'], broadcast_callback)
 
         except upstox_client.rest.ApiException as e:
             print(f"Upstox API Error during WebSocket setup: {e}. Cannot connect.")
@@ -143,8 +144,13 @@ if __name__ == '__main__':
         from trading_app.core.database import init_db
         init_db()
 
+        # Dummy callback for testing purposes
+        async def dummy_broadcast(message):
+            print(f"--- DUMMY BROADCAST ---: {message}")
+
         print("Starting WebSocket connection task...")
-        wss_task = asyncio.create_task(start_wss_connection(UPSTOX_ACCESS_TOKEN))
+        # Pass the dummy callback to the connection function
+        wss_task = asyncio.create_task(start_wss_connection(UPSTOX_ACCESS_TOKEN, dummy_broadcast))
 
         await asyncio.sleep(5)
 
