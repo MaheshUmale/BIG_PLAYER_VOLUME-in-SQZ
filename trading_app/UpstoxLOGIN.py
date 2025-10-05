@@ -1,104 +1,67 @@
 import configparser
-
+import os
 import upstox_client
 from upstox_client.rest import ApiException
 
-import pandas as pd
-import numpy as np
-from binance.client import Client
-import logging
-import plotly.graph_objects as go
+# --- Configuration ---
+def get_config():
+    """
+    Reads and returns configuration from my.properties, robustly finding the file.
+    """
+    config = configparser.ConfigParser()
 
-# Set logging configuration
-logging.basicConfig(level=logging.INFO)
-pd.set_option("display.max_columns", 500)
-pd.set_option("display.max_rows", 1000)
+    # Get the directory where this script (UpstoxLOGIN.py) is located.
+    # This makes the path finding independent of the current working directory.
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    properties_path = os.path.join(current_dir, 'my.properties')
 
+    if not os.path.exists(properties_path):
+        raise FileNotFoundError(f"Configuration file not found at: {properties_path}")
 
-redirect_uri ='http://127.0.0.1:5000/callback' #http://127.0.0.1:5000/callback
+    config.read(properties_path)
+    return config
 
-alreadyLoggedIn = False
+def get_login_url():
+    """Constructs the Upstox login URL."""
+    config = get_config()
+    client_id = config['DEFAULT']['apikey']
+    redirect_uri = config['DEFAULT']['redirect_uri']
 
-# Create a configparser object
-config = configparser.ConfigParser()
-config.read('my.properties')
-client_id =config['DEFAULT']['apikey'] #'76AF35' 
-code = config['DEFAULT']['code']
-client_secret = config['DEFAULT']['secret']
-# Read the properties file
-#config.read('my.properties')
+    return f"https://api-v2.upstox.com/v2/login/authorization/dialog?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}"
 
-# Get a value from the properties file
-##code = config['DEFAULT']['code']
-if config.has_option('DEFAULT', 'token'):
-    # Configure OAuth2 access token for authorization: OAUTH2
-    configuration = upstox_client.Configuration()
-    token = config['DEFAULT']['token']
-    configuration.access_token = token
-    #alreadyLoggedIn = True
-    client_id =  config['DEFAULT']['apikey']
-    starturl =  config['DEFAULT']['starturl']
-    
-    print( " START WITH THIS URL TO GET CODE and then use that code for login ")
-    print(starturl)
-    print('---'*10)
 def login_to_upstox(code):
-    global alreadyLoggedIn
-    if alreadyLoggedIn == False:
-        # create an instance of the API class
-        api_instance = upstox_client.LoginApi()
-        api_version = '2.0'  # str | API Version Header
-        # code = '' # str |  (optional)
-        
-        # client_secret = ''  # str |  (optional)
-        redirect_uri = 'http://127.0.0.1:5000/callback' ##'http://127.0.0.1:5000/callback' ##"https://127.0.0.1/redirected" #'http://127.0.0.1:5000/upstox/callback' # 'http://127.0.0.1:5000'  #'http://127.0.0.1:5000/upstox/callback' #  'http://127.0.0.1:5000'  # str |  (optional)
-        grant_type = 'authorization_code'  # str |  (optional)
+    """
+    Exchanges the authorization code for an access token and stores it.
+    """
+    config = get_config()
+    client_id = config['DEFAULT']['apikey']
+    client_secret = config['DEFAULT']['secret']
+    redirect_uri = config['DEFAULT']['redirect_uri']
 
-        # Configure OAuth2 access token for authorization: OAUTH2
-        configuration = upstox_client.Configuration()
+    api_instance = upstox_client.LoginApi()
+    api_version = '2.0'
+    grant_type = 'authorization_code'
 
-        try:
-            # Get token API
-            api_response = api_instance.token(api_version, code=code, client_id=client_id, client_secret=client_secret,
-                                              redirect_uri=redirect_uri, grant_type=grant_type)
-            print(api_response)
-            configuration.access_token = api_response
-            print('accessToken')
-            print(api_response.access_token)
-            # Write a value to the properties file
-            # Create a configparser object
-            config = configparser.ConfigParser()
+    try:
+        # Get token API
+        api_response = api_instance.token(
+            api_version,
+            code=code,
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+            grant_type=grant_type
+        )
 
-            print(api_response.access_token)
-            # Read the properties file
-            config.read('my.properties')
-            config['DEFAULT']['code'] = code
-            config['DEFAULT']['token'] = configuration.access_token
-            print(code)
-            print(configuration.access_token)
-            alreadyLoggedIn = True
+        access_token = api_response.access_token
+        print("Successfully obtained access token.")
 
-            # Save the properties file
-            with open('my.properties', 'w') as f:
-                config.write(f)
-                print(config)
+        # Store the access token in an environment variable
+        os.environ['UPSTOX_ACCESS_TOKEN'] = access_token
+        print("UPSTOX_ACCESS_TOKEN has been set in the environment.")
 
-            return configuration.access_token
-        except ApiException as e:
-            alreadyLoggedIn = False
-            print("Exception when calling LoginApi->token: %s\n" % e)
-            print(
-                f"RETRY check out this [ https://api-v2.upstox.com/v2/login/authorization/dialog?response_type=code&client_id={client_id}redirect_uri ]")
+        return access_token
 
-
-# https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id=<Your-API-Key-Here>&redirect_uri=<Your-Redirect-URI-Here>&state=<Your-Optional-State-Parameter-Here>
-
-
-
-URI = f"https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}"
-  
-print(f"https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}")
-
-print(URI)
-# code='NrXGQL'
-login_to_upstox(code)
+    except ApiException as e:
+        print(f"Exception when calling LoginApi->token: {e}")
+        return None
