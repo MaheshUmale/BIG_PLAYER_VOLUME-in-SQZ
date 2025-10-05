@@ -2,6 +2,17 @@
 
 The final solution must integrate three logical components: a real-time market scanner, a robust Pub/Sub data ingestion service, and a single-page charting web application that visualizes both live data and "Big Player Volume" signals.
 
+
+
+The following repositories contain the existing code/logic that must be adapted, integrated, and enhanced for this project. JULES, please clone, analyze, and extract the necessary logic from these sources:"
+
+Scanner Logic: https://github.com/MaheshUmale/BREAKOUT_SCANNER_WEBAPP
+
+Pub/Sub & Data Handling: https://github.com/MaheshUmale/PubSub_withScanner
+
+Charting Visualization: https://github.com/MaheshUmale/BubbleChartApp
+
+
 ### Phase 1: Core Data & Authentication Setup
 
 **Task 1.1: Upstox Instrument Key Mapping Service**
