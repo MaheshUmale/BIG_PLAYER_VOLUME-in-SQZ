@@ -1,0 +1,15 @@
+firebase-admin
+upstox-python-sdk
+pandas
+pandas-ta
+flask
+mpubsub
+websockets
+python-dotenv
+numpy
+google-cloud-firestore
+requests
+gunicorn
+protobuf
+tradingview_screener
+rookiepy
