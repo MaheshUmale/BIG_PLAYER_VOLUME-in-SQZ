@@ -99,7 +99,7 @@
             tableBody.innerHTML = data.map(item => `
                 <tr class="hover:bg-gray-700">
                     <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-blue-400">
-                        <a href="/chart?symbol=NSE:${item.name}" target="_blank" class="hover:underline">${item.name}</a>
+                        <a href="/chart?symbol=${item.name}" target="_blank" class="hover:underline">${item.name}</a>
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${item.close.toFixed(2)}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${(item.rvol || 0).toFixed(2)}</td>
@@ -120,7 +120,7 @@
             tableBody.innerHTML = data.map(item => `
                 <tr class="hover:bg-gray-700">
                     <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-blue-400">
-                        <a href="/chart?symbol=NSE:${item.ticker}" target="_blank" class="hover:underline">${item.ticker}</a>
+                        <a href="/chart?symbol=${item.ticker}" target="_blank" class="hover:underline">${item.ticker}</a>
                     </td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${new Date(item.fired_timestamp).toLocaleTimeString()}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${item.fired_timeframe}</td>

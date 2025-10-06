@@ -52,9 +52,11 @@ async def process_live_feed(feed, broadcast_callback):
             # 1. Save to the central database
             save_candle_data(instrument_key, completed_candle)
 
-            # 2. Broadcast the completed candle to all connected clients
+            # 2. Broadcast the completed candle to SUBSCRIBED clients
+            # The message now includes the symbol for targeted broadcasting
             await broadcast_callback({
                 "type": "live_candle",
+                "symbol": symbol,
                 "data": completed_candle
             })
 
